@@ -25,7 +25,7 @@ API_TARGET     = "https://pwthor.live"
 
 # Add / edit your injected cookies here (for /api/... only)
 INJECTED_COOKIES: dict[str, str] = {
-    # "cookie1": "value1",
+     "auth_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJtb2JpbGUiOiI2NDI2MzQwOTQzNDciLCJuYW1lIjoiUFdUaG9yIFVzZXIgZDQyOTM3NTgiLCJyYW5kb21JZCI6ImQ0MjkzNzU4LTIwNzktNDdhMy04ODhiLWVmYWJiMGY2NDY0NiIsImF1dGhUeXBlIjoiZGlyZWN0X2xvZ2luIiwiZGlyZWN0TG9naW4iOnRydWUsImlhdCI6MTc4OTk4NjcwMSwiZXhwIjoxNzk3NzYyNzAxfQ.GduD_SjI6qReGj5cPFaxJHss-kr1-VwiIaJXl510Gps",
     # "cookie2": "value2",
 }
 
