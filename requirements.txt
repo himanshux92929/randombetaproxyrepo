@@ -1,4 +1,3 @@
-fastapi==0.115.5
-uvicorn[standard]==0.32.1
-curl-cffi>=0.16.0
-httpx
+flask>=3.0.0
+curl-cffi>=0.7.0
+gunicorn>=22.0.0
