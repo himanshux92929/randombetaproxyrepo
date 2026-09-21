@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: cf-proxy
+    runtime: python
+    plan: free            # change to starter/standard for more RAM/CPU
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 2 --loop uvloop --http httptools
+    envVars:
+      - key: SESSION_POOL_SIZE
+        value: "4"
+      - key: PYTHON_VERSION
+        value: "3.12.0"
