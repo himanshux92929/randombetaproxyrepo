@@ -9,53 +9,56 @@ app = Flask(__name__)
 
 TARGET_BASE = "https://proxy.streamvideo.co.in"
 
-# Headers to forward as-is from the original request (if present),
-# or inject realistic defaults matching the observed traffic
-PASSTHROUGH_HEADERS = [
+# These are the EXACT headers captured from the working cross-site fetch
+# from pwthor.live → proxy.streamvideo.co.in
+# Order matters for HTTP/2 fingerprinting — keep it as-is
+FIXED_HEADERS = [
+    ("Host",              "proxy.streamvideo.co.in"),
+    ("User-Agent",        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"),
+    ("Accept",            "application/json"),
+    ("Accept-Language",   "en-US"),
+    ("Accept-Encoding",   "gzip, deflate, br, zstd"),
+    # These three are the key Cloudflare bypass triggers:
+    ("Sec-Fetch-Dest",    "empty"),          # ← NOT "document", so CF skips challenge
+    ("Sec-Fetch-Mode",    "cors"),
+    ("Sec-Fetch-Site",    "cross-site"),     # ← tells CF this is a cross-origin fetch
+    ("Sec-GPC",           "1"),
+    # Origin + Referer make it look like the request came from pwthor.live
+    ("Origin",            "https://pwthor.live"),
+    ("Referer",           "https://pwthor.live/"),
+    ("Connection",        "keep-alive"),
+    ("priority",          "u=1, i"),
+]
+
+# Per-request headers forwarded from the caller (they change each request)
+DYNAMIC_HEADERS = [
     "client-id",
     "client-type",
     "client-version",
     "randomid",
-    "accept",
-    "accept-language",
-    "priority",
 ]
 
-# Headers we always block from being forwarded upstream
-BLOCKED_UPSTREAM_HEADERS = {
-    "host", "content-length", "transfer-encoding",
-    "connection", "x-forwarded-for", "x-real-ip",
-}
 
+def build_upstream_headers(incoming: dict) -> list:
+    """
+    Returns an ordered list of (name, value) tuples.
+    curl_cffi preserves insertion order for HTTP/2 HPACK — important for
+    passing Cloudflare's header-order fingerprint check.
+    Dynamic per-request headers are injected right before the Sec-Fetch block,
+    matching the position they appear in captured browser traffic.
+    """
+    headers = []
+    dynamic_inserted = False
 
-def build_upstream_headers(incoming_headers: dict) -> dict:
-    """Build headers that make the request look like it's coming from
-    the original browser (pwthor.live origin)."""
-
-    headers = {
-        # Mimic the exact User-Agent observed
-        "User-Agent": (
-            incoming_headers.get("user-agent")
-            or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-               "AppleWebKit/537.36 (KHTML, like Gecko) "
-               "Chrome/149.0.0.0 Safari/537.36"
-        ),
-        "Accept": incoming_headers.get("accept", "application/json"),
-        "Accept-Language": incoming_headers.get("accept-language", "en-US"),
-        # The target server checks Origin — spoof it
-        "Origin": "https://pwthor.live",
-        "Referer": "https://pwthor.live/",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "cross-site",
-        "Sec-GPC": "1",
-    }
-
-    # Forward passthrough headers if the caller supplied them
-    for h in PASSTHROUGH_HEADERS:
-        val = incoming_headers.get(h)
-        if val:
-            headers[h] = val
+    for name, value in FIXED_HEADERS:
+        # Inject dynamic headers just before Sec-Fetch-Dest (matching real browser order)
+        if name == "Sec-Fetch-Dest" and not dynamic_inserted:
+            for dh in DYNAMIC_HEADERS:
+                v = incoming.get(dh) or incoming.get(dh.lower())
+                if v:
+                    headers.append((dh, v))
+            dynamic_inserted = True
+        headers.append((name, value))
 
     return headers
 
@@ -68,9 +71,10 @@ def proxy(subpath):
 
     logger.info(f"Proxying {request.method} → {upstream_url}")
 
-    upstream_headers = build_upstream_headers(dict(request.headers))
+    upstream_headers = build_upstream_headers(
+        {k.lower(): v for k, v in request.headers.items()}
+    )
 
-    # Body for non-GET requests
     body = request.get_data() or None
 
     try:
@@ -79,29 +83,33 @@ def proxy(subpath):
             url=upstream_url,
             headers=upstream_headers,
             data=body,
-            # chrome124 gives a real Chrome TLS/JA3/JA4 fingerprint + HTTP/2
+            # chrome124 = real Chrome 124 JA3/JA4 TLS fingerprint + HTTP/2 ALPN
             impersonate="chrome124",
             timeout=30,
             allow_redirects=True,
             verify=True,
+            # Do NOT send any cookies from our server — clean slate, just like
+            # a cross-site fetch where third-party cookies are blocked
+            cookies={},
         )
     except Exception as exc:
         logger.error(f"Upstream request failed: {exc}")
         return Response(f"Proxy error: {exc}", status=502, mimetype="text/plain")
 
-    # Build response — strip hop-by-hop headers, force CORS open
-    excluded_response_headers = {
+    logger.info(f"Upstream responded {resp.status_code}")
+
+    # Strip hop-by-hop + encoding headers (Flask handles encoding itself)
+    excluded = {
         "content-encoding", "transfer-encoding", "connection",
         "keep-alive", "proxy-authenticate", "proxy-authorization",
         "te", "trailers", "upgrade",
     }
-
     response_headers = {
         k: v for k, v in resp.headers.items()
-        if k.lower() not in excluded_response_headers
+        if k.lower() not in excluded
     }
 
-    # Always allow any origin so browser callers don't get CORS-blocked
+    # Open CORS so your frontend JS can read the response
     response_headers["Access-Control-Allow-Origin"] = "*"
     response_headers["Access-Control-Allow-Headers"] = "*"
     response_headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE, PATCH"
@@ -116,7 +124,7 @@ def proxy(subpath):
 
 @app.route("/", methods=["GET"])
 def health():
-    return {"status": "ok", "message": "Proxy is running. Use /proxy/<path>"}, 200
+    return {"status": "ok", "message": "Proxy running. Use /proxy/<path>"}, 200
 
 
 if __name__ == "__main__":
